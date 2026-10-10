@@ -53,6 +53,12 @@ typedef unsigned long long u64;
 typedef s64 ssize;
 typedef u64 usize;
 
+typedef u8 b8;
+typedef u32 b32;
+
+#define true (1)
+#define false (0)
+
 #define _GNU_SOURCE
 #include <sched.h>
 #include <time.h>
@@ -181,9 +187,17 @@ local void LinuxJoinThread(linux_thread Thread)
     futex_wait(Thread.JoinFutex, 0);
 }
 
+typedef struct
+{
+    u32 ThreadCount;
+    u32 Sum;
+} linux_state;
+
+local linux_state Linux = {0};
+
 void LinuxBootstrap(s32 ArgCount, char* Args[], char* Envp[])
 {
-    u32 CoreCountOfCPU = 1;
+    Linux.ThreadCount = 1;
 
     {
         cpu_set_t Set = {0};
@@ -203,41 +217,79 @@ void LinuxBootstrap(s32 ArgCount, char* Args[], char* Envp[])
                 Counted += ((Mask & (1ull << BitIndex)) != 0);
         }
 
-        CoreCountOfCPU = Maximum(1, Counted);
+        Linux.ThreadCount = Maximum(1, Counted);
     }
 
-    linux_thread* Threads = mmap(0, CoreCountOfCPU * sizeof(linux_thread), PROT_READ|PROT_WRITE, MAP_PRIVATE|MAP_ANON, -1, 0);
+    linux_thread* Threads = mmap(0, Linux.ThreadCount * sizeof(linux_thread), PROT_READ|PROT_WRITE, MAP_PRIVATE|MAP_ANON, -1, 0);
 
-    for (usize ThreadID = 1; ThreadID < CoreCountOfCPU; ThreadID++)
+    for (usize ThreadIndex = 1; ThreadIndex < Linux.ThreadCount; ThreadIndex++)
     {
         void* Function      = (void*)(LinuxEntry);
         usize StackSize     = KB(512);
-        void* Parameters    = (void*)(ThreadID);
+        void* Parameters    = (void*)(ThreadIndex);
 
-        Threads[ThreadID] = LinuxLaunchThread(Function, StackSize, Parameters);
+        Threads[ThreadIndex] = LinuxLaunchThread(Function, StackSize, Parameters);
     }
 
     u8 ExitCode = 0;
 
     {
-        usize MainThreadID = 0;
-        void* Parameters = (void*)(MainThreadID);
+        usize MainThreadIndex = 0;
+        void* Parameters = (void*)(MainThreadIndex);
         ExitCode = LinuxEntry(Parameters);
     }
 
-    for (usize ThreadID = 1; ThreadID < CoreCountOfCPU; ThreadID++)
+    for (usize ThreadIndex = 1; ThreadIndex < Linux.ThreadCount; ThreadIndex++)
     {
-        LinuxJoinThread(Threads[ThreadID]);
+        LinuxJoinThread(Threads[ThreadIndex]);
     }
 
     exit_group(ExitCode);
 }
 
+typedef struct
+{
+    u32 ArrivedCount;
+} barrier;
+
+#define SUM_RANGE (1090)
+
+static barrier EndBarrier = {0};
+
+local void BarrierSync(barrier* Barrier)
+{
+    __atomic_fetch_add(&Barrier->ArrivedCount, 1, __ATOMIC_SEQ_CST);
+
+    while (Barrier->ArrivedCount != Linux.ThreadCount);
+}
+
 local u8 LinuxEntry(void* Parameters)
 {
-    usize ThreadID = (usize)(Parameters);
+    usize ThreadIndex = (usize)(Parameters);
 
-    u8 ExitCode = ThreadID;
+    u8 ExitCode = ThreadIndex;
+
+    b32 IsLastThread    = (ThreadIndex + 1 == Linux.ThreadCount);
+    u32 RangePerBatch   = SUM_RANGE / Linux.ThreadCount;
+    u32 Leftover        = SUM_RANGE - (RangePerBatch * Linux.ThreadCount);
+
+    u32 Start   = ThreadIndex * RangePerBatch;
+    u32 End     = Start + RangePerBatch + (Leftover * IsLastThread);
+    u32 ThisSum = 0;
+
+    for (u32 Value = Start; Value < End; Value++)
+    {
+        ThisSum += Value;
+    }
+
+    __atomic_fetch_add(&Linux.Sum, ThisSum, __ATOMIC_SEQ_CST);
+
+    BarrierSync(&EndBarrier);
+
+    if (ThreadIndex == 0)
+    {
+        int BreakHere = 5;
+    }
 
     return (ExitCode);
 }
