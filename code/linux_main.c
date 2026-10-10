@@ -29,6 +29,7 @@
 //        when you have a shared entry point!
 
 #define local static
+#define persist static
 
 #define Minimum(A, B) ((A) < (B) ? (A) : (B))
 #define Maximum(A, B) ((A) > (B) ? (A) : (B))
@@ -247,20 +248,28 @@ void LinuxBootstrap(s32 ArgCount, char* Args[], char* Envp[])
     exit_group(ExitCode);
 }
 
-typedef struct
-{
-    u32 ArrivedCount;
-} barrier;
-
 #define SUM_RANGE (1090)
 
-static barrier EndBarrier = {0};
-
-local void BarrierSync(barrier* Barrier)
+local void BarrierSync(void)
 {
-    __atomic_fetch_add(&Barrier->ArrivedCount, 1, __ATOMIC_SEQ_CST);
+    persist u32 ArrivedCount = 0; // NOTE(vak): How many threads have arrived here and is waiting?
+    persist u32 ExitedCount = 0;  // NOTE(vak): How many threads have stopped waiting?
 
-    while (Barrier->ArrivedCount != Linux.ThreadCount);
+    // NOTE(vak): Wait until all threads have arrived here
+    {
+        ExitedCount = 0;
+
+        __atomic_fetch_add(&ArrivedCount, 1, __ATOMIC_SEQ_CST);
+        while (ArrivedCount != Linux.ThreadCount);
+    }
+
+    // NOTE(vak): Wait until all threads have moved on
+    {
+        __atomic_fetch_add(&ExitedCount, 1, __ATOMIC_SEQ_CST);
+        while (ExitedCount != Linux.ThreadCount);
+
+        ArrivedCount = 0;
+    }
 }
 
 local u8 LinuxEntry(void* Parameters)
@@ -284,12 +293,9 @@ local u8 LinuxEntry(void* Parameters)
 
     __atomic_fetch_add(&Linux.Sum, ThisSum, __ATOMIC_SEQ_CST);
 
-    BarrierSync(&EndBarrier);
+    BarrierSync();
 
-    if (ThreadIndex == 0)
-    {
-        int BreakHere = 5;
-    }
+    int BreakHere = 5;
 
     return (ExitCode);
 }
