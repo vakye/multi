@@ -252,24 +252,20 @@ void LinuxBootstrap(s32 ArgCount, char* Args[], char* Envp[])
 
 local void BarrierSync(void)
 {
-    persist u32 ArrivedCount = 0; // NOTE(vak): How many threads have arrived here and is waiting?
-    persist u32 ExitedCount = 0;  // NOTE(vak): How many threads have stopped waiting?
+    persist u32 ArrivedCount = 0;
+    persist u32 ExitedCount = 0;
 
-    // NOTE(vak): Wait until all threads have arrived here
-    {
-        ExitedCount = 0;
+    __atomic_fetch_add(&ArrivedCount, 1, __ATOMIC_SEQ_CST);
+    while (ArrivedCount < Linux.ThreadCount);
 
-        __atomic_fetch_add(&ArrivedCount, 1, __ATOMIC_SEQ_CST);
-        while (ArrivedCount != Linux.ThreadCount);
-    }
+    __atomic_fetch_add(&ExitedCount, 1, __ATOMIC_SEQ_CST);
+    while (ExitedCount < Linux.ThreadCount);
 
-    // NOTE(vak): Wait until all threads have moved on
-    {
-        __atomic_fetch_add(&ExitedCount, 1, __ATOMIC_SEQ_CST);
-        while (ExitedCount != Linux.ThreadCount);
+    __atomic_fetch_sub(&ArrivedCount, 1, __ATOMIC_SEQ_CST);
+    while (ArrivedCount > 0);
 
-        ArrivedCount = 0;
-    }
+    __atomic_fetch_sub(&ExitedCount, 1, __ATOMIC_SEQ_CST);
+    while (ExitedCount > 0);
 }
 
 local u8 LinuxEntry(void* Parameters)
@@ -294,8 +290,12 @@ local u8 LinuxEntry(void* Parameters)
     __atomic_fetch_add(&Linux.Sum, ThisSum, __ATOMIC_SEQ_CST);
 
     BarrierSync();
+    BarrierSync();
 
     int BreakHere = 5;
+
+    BarrierSync();
+    BarrierSync();
 
     return (ExitCode);
 }
